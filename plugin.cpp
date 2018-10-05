@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -17,18 +18,78 @@ typedef struct {
 #endif
 } pattern_t;
 
-typedef struct {
-	uint8_t *ResampleOut;
-	uint8_t *orig;
-	int origSize;
-} patchinfo_t;
-static patchinfo_t p;
+
+class Hook {
+public:
+	Hook() : m_textVA(NULL), m_addr(NULL) {}
+	Hook(LPVOID textVA, DWORD textSize) : m_textVA(textVA), m_textSize(textSize), m_addr(NULL) {}
+
+	bool hook(void *addr, void *target) {
+		if (m_textVA == NULL || m_addr != NULL) {
+			return false;
+		}
+		if (!setProtection()) {
+			return false;
+		}
+		m_addr = (uint8_t *)addr;
+		memcpy(m_orig, m_addr, m_bytes);
+		#ifdef _WIN64
+			memcpy(m_addr, "\x48\xb8", 2);  // movabs rax
+			*(uint64_t *)(m_addr+2) = (uint64_t)target;
+			memcpy(m_addr+10, "\xff\xe0\x90", 3);  // jmp rax; nop
+		#else
+			*(m_addr) = 0xe9;  // jmp
+			*(uint32_t *)(m_addr+1) = (uint32_t)target - (uint32_t)(m_addr+5);  // relative displacement
+			*(m_addr+5) = 0x90;  // nop
+		#endif
+		restoreProtection();
+		return true;
+	}
+
+	void restore() {
+		if (m_addr == NULL) {
+			return;
+		}
+		if (!setProtection()) {
+			return;
+		}
+		memcpy(m_addr, m_orig, m_bytes);
+		m_addr = NULL;
+		restoreProtection();
+	}
+
+private:
+	bool setProtection() {
+		if (m_textVA == NULL) {
+			return false;
+		}
+		if (!VirtualProtect(m_textVA, m_textSize, PAGE_EXECUTE_READWRITE, &m_prot)) {
+			return false;
+		}
+		return true;
+	}
+	void restoreProtection() {
+		if (m_textVA != NULL) {
+			DWORD t;
+			VirtualProtect(m_textVA, m_textSize, m_prot, &t);
+		}
+	}
+	
+	#ifdef _WIN64
+		static constexpr int m_bytes = 13;
+		uint8_t m_orig[m_bytes];
+	#else
+		static constexpr int m_bytes = 6;
+		uint8_t m_orig[m_bytes];
+	#endif
+	LPVOID m_textVA;
+	DWORD m_textSize;
+	uint8_t *m_addr;
+	DWORD m_prot;
+};
 
 
-static LPVOID textVA = NULL;
-static DWORD textSize = 0;
-
-static bool getTextVAAndSize() {
+static bool getTextVAAndSize(LPVOID *textVA, DWORD *textSize) {
 	const uint8_t *imageBase = (uint8_t *)GetModuleHandle(NULL);
 	const PIMAGE_DOS_HEADER imageDosHeader = (PIMAGE_DOS_HEADER)imageBase;
 	if (imageDosHeader->e_magic != 0x5a4d) {
@@ -43,41 +104,12 @@ static bool getTextVAAndSize() {
 		((uint8_t *)imageFileHeader + sizeof(IMAGE_FILE_HEADER) + imageFileHeader->SizeOfOptionalHeader);
 	for (int i = 0; i < imageFileHeader->NumberOfSections; i++, imageSectionHeader++) {
 		if (strcmp((char *)imageSectionHeader->Name, ".text") == 0) {
-			textVA = (LPVOID)(imageBase + imageSectionHeader->VirtualAddress);
-			textSize = imageSectionHeader->Misc.VirtualSize;
+			*textVA = (LPVOID)(imageBase + imageSectionHeader->VirtualAddress);
+			*textSize = imageSectionHeader->Misc.VirtualSize;
 			return true;
 		}
 	}
 	return false;
-}
-
-static bool patch() {
-	DWORD prot;
-	if (!VirtualProtect(textVA, textSize, PAGE_EXECUTE_READWRITE, &prot)) {
-		return false;
-	}
-	#ifdef _WIN64
-		memcpy(p.ResampleOut, "\x48\xb8", 2);  // movabs rax
-		*(uint64_t *)(p.ResampleOut+2) = (uint64_t)WDL_Resampler::pResampleOut.getAddr();
-		memcpy(p.ResampleOut+10, "\xff\xe0\x90", 3);  // jmp rax; nop
-	#else
-		*(p.ResampleOut) = 0xe9;  // jmp
-		*(uint32_t *)(p.ResampleOut+1) = (uint32_t)WDL_Resampler::pResampleOut.getAddr() - (uint32_t)(p.ResampleOut+5);  // relative displacement
-		*(p.ResampleOut+5) = 0x90;  // nop
-	#endif
-	DWORD t;
-	VirtualProtect(textVA, textSize, prot, &t);
-	return true;
-}
-
-static void restore() {
-	DWORD prot;
-	if (!VirtualProtect(textVA, textSize, PAGE_EXECUTE_READWRITE, &prot)) {
-		return;
-	}
-	memcpy(p.ResampleOut, p.orig, p.origSize);
-	DWORD t;
-	VirtualProtect(textVA, textSize, prot, &t);
 }
 
 
@@ -86,12 +118,13 @@ static DWORD WINAPI MessageBoxThread(LPVOID lpParam) {
 	return 0;
 }
 
-static bool loaded = false;
+static Hook ResampleOutHook;
+
 extern "C" {
 __declspec(dllexport)
 int ReaperPluginEntry(HINSTANCE hInstance, void *rec) {
-	if (rec == NULL && loaded) {
-		restore();
+	if (rec == NULL) {
+		ResampleOutHook.restore();
 		return 0;
 	}
 	
@@ -169,33 +202,39 @@ int ReaperPluginEntry(HINSTANCE hInstance, void *rec) {
 		};
 	#endif
 	
-	void *ResampleOut = NULL, *Resize = NULL;
-	if (!getTextVAAndSize()) {
+	LPVOID textVA = NULL;
+	DWORD textSize = 0;
+	void *pResampleOut = NULL, *pResize = NULL;
+	if (!getTextVAAndSize(&textVA, &textSize)) {
 		goto error;
 	}
 	for (int i = 0; i < patterns; i++) {
-		ResampleOut = memmem(textVA, textSize, pattern[i].ResampleOut, sizeof(pattern[i].ResampleOut));
-		if (ResampleOut == NULL) {
+		pResampleOut = memmem(textVA, textSize, pattern[i].ResampleOut, sizeof(pattern[i].ResampleOut));
+		if (pResampleOut == NULL) {
 			continue;
 		}
-		Resize = memmem(textVA, textSize, pattern[i].Resize, sizeof(pattern[i].Resize));
-		p.ResampleOut = (uint8_t *)ResampleOut;
-		p.orig = pattern[i].ResampleOut;
-		p.origSize = sizeof(pattern[i].ResampleOut);
+		pResize = memmem(textVA, textSize, pattern[i].Resize, sizeof(pattern[i].Resize));
 		break;
 	}
-	if (ResampleOut == NULL || Resize == NULL) {
+	if (pResampleOut == NULL || pResize == NULL) {
 		MessageBox(NULL, "Reaper version not supported", "", 0);
 		return 0;
 	}
+	char msg[64];
+	#ifdef _WIN64
+		sprintf(msg, "ResampleOut %llx Resize %llx", pResampleOut, pResize);
+	#else
+		sprintf(msg, "ResampleOut %lx Resize %lx", pResampleOut, pResize);
+	#endif
+	OutputDebugString(msg);
 	
-	WDL_HeapBuf::pResize = decltype(WDL_HeapBuf::pResize)(Resize);
-	if (!patch()) {
+	WDL_HeapBuf::pResize = decltype(WDL_HeapBuf::pResize)(pResize);
+	ResampleOutHook = Hook(textVA, textSize);
+	if (!ResampleOutHook.hook(pResampleOut, WDL_Resampler::pResampleOut.getAddr())) {
 		goto error;
 	}
 	
 	CreateThread(NULL, 0, MessageBoxThread, NULL, 0, 0);
-	loaded = true;
 	return 1;
 
 error:
