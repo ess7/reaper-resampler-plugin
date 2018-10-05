@@ -100,9 +100,11 @@ public:
 	int ResampleOut(WDL_ResampleSample *out, int nsamples_in, int nsamples_out, int nch);
 	static MemberFuncPtr<decltype(&WDL_Resampler::ResampleOut)> pResampleOut;
 private:
-	void BuildLowPass(double filtpos);
-	const WDL_SincFilterSample *GetFilterCoeff();
-	inline void SincSample2N(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, int nch, const WDL_SincFilterSample *filter, int filtsz);
+	class Cache;
+	void BuildLowPass(const double filtpos, const int interpsize);
+	const WDL_SincFilterSample *GetFilterCoeff(Cache *cache);
+	inline void SincSampleQuad2N(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, int nch, const WDL_SincFilterSample *filter, int filtsz);
+	inline void SincSampleZOH2N(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, int nch, const WDL_SincFilterSample *filter, int filtsz);
 	
 	double m_sratein; //WDL_FIXALIGN;
 	double m_srateout;
@@ -126,18 +128,42 @@ private:
 	int m_sincoversize;
 	char m_interp;
 	char m_feedmode;
+		
+	enum SincSize : int {
+		SIZE_64  = 0,
+		SIZE_192 = 1,
+		SIZE_384 = 2,
+		SIZE_512 = 3
+	};
 	
+	enum SampleRate : int {
+		SRATE_UNK  = -1,
+		SRATE_44p1  = 0,
+		SRATE_48    = 1,
+		SRATE_88p2  = 2,
+		SRATE_96    = 3,
+		SRATE_176p4 = 4,
+		SRATE_192   = 5,
+		SRATE_ARB   = 6
+	};
 	
 	class Cache {
 	public:
-		Cache() : coeff(NULL), state(0) {}
+		enum State : LONG {
+			EMPTY      = 0,
+			PROCESSING = 1,
+			READY      = 2
+		};
+		Cache() : state(EMPTY), coeff(NULL) {}
+		volatile State state;
 		WDL_SincFilterSample *coeff;
-		volatile LONG state;
+		SampleRate i_in, i_out;
+		int interpsize;
 	};
-	static Cache m_cache[4][6][6];  // [sincsize][sratein][srateout]
+	static Cache m_cache[4][6][7];  // [sincsize][sratein][srateout]
 	
-	inline static int GetSrateIndex(float srate);
-	Cache *GetCache() const;
+	inline static SampleRate GetSrateIndex(float srate);
+	Cache *GetCache();
 
 	
 	void _check_struct() {
