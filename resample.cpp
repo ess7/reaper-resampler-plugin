@@ -30,12 +30,7 @@
 
 double i0(double);
 
-void WDL_Resampler::BuildLowPass(const double filtpos, const int interpsize) {
-	#ifdef WDL_RESAMPLE_FULL_SINC_PRECISION
-		const double beta = 19.0;
-	#else
-		const double beta = 17.0;
-	#endif
+void WDL_Resampler::BuildLowPass(const double filtpos, const double beta, const int interpsize) {
 	const double i0betainv = 1.0/i0(beta);
 	
 	m_sincoversize = interpsize;
@@ -104,27 +99,20 @@ const WDL_SincFilterSample *WDL_Resampler::GetFilterCoeff(Cache *cache) {
 		}
 	}
 	
-	double filtpos = 1.0;
-	if (m_ratio > 1.0) {
-		filtpos = 1.0/(m_ratio*1.03);
-	}
+	#ifdef WDL_RESAMPLE_FULL_SINC_PRECISION
+		const int atten = 180;
+	#else
+		const int atten = 160;
+	#endif
+	// from kaiserord
+	const double beta = 0.1102*(atten-8.7);
+	const double width = m_sratein*(atten-7.95)/(2.0*PI*2.285*m_sincsize);	
 	#ifdef CUSTOM_FILTER
-		else {
-			if (m_sratein == SRATE_44p1) {
-				if (m_sincsize == SIZE_192) {
-					filtpos = 21.3/22.05;
-				} else if (m_sincsize == SIZE_384) {
-					filtpos = 21.4/22.05;
-				}
-			}
-			if (m_sratein == SRATE_48) {
-				if (m_sincsize == SIZE_192) {
-					filtpos = 22.6/24.0;
-				} else if (m_sincsize == SIZE_384) {
-					filtpos = 23.3/24.0;
-				}
-			}
-		}
+		// no aliasing cutoff
+		const double fc = 0.5*((m_sratein <= m_srateout ? m_sratein : m_srateout) - width);
+	#else
+		// WDL cutoff
+	    const double fc = m_sratein <= m_srateout ? 0.5*m_sratein : (0.5/1.03)*m_srateout;
 	#endif
 	
 	int interpsize;
@@ -142,10 +130,10 @@ const WDL_SincFilterSample *WDL_Resampler::GetFilterCoeff(Cache *cache) {
 	} else {
 		interpsize = INTERPSIZE;
 	}
-	BuildLowPass(filtpos, interpsize);
+	BuildLowPass(fc/(0.5*m_sratein), beta, interpsize);
 	char buf[128];
-	sprintf(buf, "BuildLowPass %.2f->%.2f cache:(%d %d) size:%d interp:%d", m_sratein, m_srateout,
-		cache != NULL ? cache->i_in : -1, cache != NULL ? cache->i_out : -1, m_sincsize, interpsize);
+	sprintf(buf, "BuildLowPass %.2f->%.2f beta:%.2f fc:%.2f cache:(%d %d) size:%d interp:%d", m_sratein, m_srateout, beta, fc,
+		cache != NULL ? cache->i_in : -1, cache != NULL ? cache->i_out : -1, m_filter_coeffs_size, m_lp_oversize);
 	OutputDebugString(buf);
 	
 	const WDL_SincFilterSample *cfout = m_filter_coeffs.Get();
@@ -206,7 +194,7 @@ inline void WDL_Resampler::SincSampleQuad2N(WDL_ResampleSample *outptr, const WD
 	for (int ch = 0; ch < nch; ch += 2) {
 		const WDL_SincFilterSample *fptr1 = filter + (oversize-ifpos+2) * filtsz;
 		const WDL_SincFilterSample *fptr2 = fptr1 - filtsz;
-		const WDL_SincFilterSample *fptr3 = fptr2 - filtsz;	
+		const WDL_SincFilterSample *fptr3 = fptr2 - filtsz;
 		const WDL_ResampleSample *iptr = inptr + ch;
 		__m128d sum1 = _mm_setzero_pd();
 		__m128d sum2 = _mm_setzero_pd();
@@ -215,12 +203,9 @@ inline void WDL_Resampler::SincSampleQuad2N(WDL_ResampleSample *outptr, const WD
 		while (i--) {
 			const __m128d inp = _mm_loadu_pd(iptr);
 			const double f[3] = {*fptr1, *fptr2, *fptr3};
-			const __m128d f1 = _mm_load1_pd(f);
-			const __m128d f2 = _mm_load1_pd(f+1);
-			const __m128d f3 = _mm_load1_pd(f+2);
-			sum1 = _mm_add_pd(sum1, _mm_mul_pd(inp, f1));
-			sum2 = _mm_add_pd(sum2, _mm_mul_pd(inp, f2));
-			sum3 = _mm_add_pd(sum3, _mm_mul_pd(inp, f3));
+			sum1 = _mm_add_pd(sum1, _mm_mul_pd(inp, _mm_load1_pd(f  )));
+			sum2 = _mm_add_pd(sum2, _mm_mul_pd(inp, _mm_load1_pd(f+1)));
+			sum3 = _mm_add_pd(sum3, _mm_mul_pd(inp, _mm_load1_pd(f+2)));
 			iptr += nch;
 			fptr1++;
 			fptr2++;

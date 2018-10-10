@@ -101,7 +101,7 @@ public:
 	static MemberFuncPtr<decltype(&WDL_Resampler::ResampleOut)> pResampleOut;
 private:
 	class Cache;
-	void BuildLowPass(const double filtpos, const int interpsize);
+	void BuildLowPass(const double filtpos, const double beta, const int interpsize);
 	const WDL_SincFilterSample *GetFilterCoeff(Cache *cache);
 	inline void SincSampleQuad2N(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, int nch, const WDL_SincFilterSample *filter, int filtsz);
 	inline void SincSampleZOH2N(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, int nch, const WDL_SincFilterSample *filter, int filtsz);
