@@ -89,7 +89,7 @@ const WDL_SincFilterSample *WDL_Resampler::GetFilterCoeff(Cache *cache) {
 				while (cache->state != Cache::State::READY) {
 					Sleep(1);
 				}
-				m_filter_coeffs_size = m_sincsize;
+				m_filter_coeffs_size = cache->coeff != NULL ? m_sincsize : 0;
 				m_lp_oversize = m_sincoversize = cache->interpsize;
 				return cache->coeff;
 			} else if (InterlockedCompareExchange((LONG *)&cache->state, Cache::State::PROCESSING, Cache::State::EMPTY)
@@ -112,7 +112,7 @@ const WDL_SincFilterSample *WDL_Resampler::GetFilterCoeff(Cache *cache) {
 		const double fc = 0.5*((m_sratein <= m_srateout ? m_sratein : m_srateout) - width);
 	#else
 		// WDL cutoff
-	    const double fc = m_sratein <= m_srateout ? 0.5*m_sratein : (0.5/1.03)*m_srateout;
+		const double fc = m_sratein <= m_srateout ? 0.5*m_sratein : (0.5/1.03)*m_srateout;
 	#endif
 	
 	int interpsize;
@@ -140,7 +140,11 @@ const WDL_SincFilterSample *WDL_Resampler::GetFilterCoeff(Cache *cache) {
 	if (cache != NULL) {
 		const int size = sizeof(WDL_SincFilterSample)*m_filter_coeffs_size*(m_lp_oversize + 3);
 		cache->coeff = (WDL_SincFilterSample *)malloc(size);
-		memcpy(cache->coeff, cfout, size);
+		if (cache->coeff != NULL) {
+			memcpy(cache->coeff, cfout, size);
+		} else {
+			m_filter_coeffs_size = 0;
+		}
 		cache->state = Cache::State::READY;
 		return cache->coeff;
 	} else {
