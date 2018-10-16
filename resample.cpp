@@ -28,6 +28,14 @@
 
 #define PI 3.1415926535897932384626433832795
 
+static inline long int ltrunc(double x) {
+	return _mm_cvttsd_si32(_mm_load_sd(&x));
+}
+static inline long int _lrint(double x) {
+	return _mm_cvtsd_si32(_mm_load_sd(&x));
+}
+#define lrint _lrint
+
 double i0(double);
 
 void WDL_Resampler::BuildLowPass(const double filtpos, const double beta, const int interpsize) {
@@ -152,33 +160,71 @@ const WDL_SincFilterSample *WDL_Resampler::GetFilterCoeff(Cache *cache) {
 	}
 }
 
-inline void WDL_Resampler::SincSampleZOH2N(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, int nch, const WDL_SincFilterSample *filter, int filtsz) {
+inline void WDL_Resampler::SincSampleZOH1(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, const WDL_SincFilterSample *filter, int filtsz) {
 	const int oversize=m_lp_oversize;
 	fracpos *= oversize;
-	const int ifpos = lround(fracpos);
+	const int ifpos = lrint(fracpos);
 	const WDL_SincFilterSample *fptr = filter + (oversize-ifpos+1) * filtsz;
 	
-	const int blksz = nch == 2 ? 4 : nch == 4 ? 2 : 1;
-	
-	__m128d sum[WDL_RESAMPLE_MAX_NCH/2];
-	for (int ch = 0; ch < nch/2; ch++) {
-		sum[ch] = _mm_setzero_pd();
+	constexpr int BLKSIZE = 4;
+	__m128d sum[BLKSIZE];
+	#pragma unroll
+	for (int i = 0; i < BLKSIZE; i++) {
+		sum[i] = _mm_setzero_pd();
 	}
-	// assumes filtsz % blksz == 0
+	// assumes filtsz % 8 == 0
 	while (filtsz) {
-		for (int i = 0; i < blksz; i++) {
-			const double _f = *fptr;
-			const __m128d f = _mm_load1_pd(&_f);
-			for (int ch = 0; ch < nch/2; ch++) {
-				sum[ch] = _mm_add_pd(sum[ch], _mm_mul_pd(_mm_loadu_pd(inptr + 2*ch), f));
-			}
-			inptr += nch;
-			fptr++;
+		#pragma unroll
+		for (int i = 0; i < BLKSIZE; i++) {
+			const double f[2] = {fptr[0], fptr[1]};
+			fptr += 2;
+			sum[i] = _mm_add_pd(sum[i], _mm_mul_pd(_mm_loadu_pd(inptr), _mm_loadu_pd(f)));
+			inptr += 2;
 		}
-		filtsz -= blksz;
+		filtsz -= 2*BLKSIZE;
 	}
-	for (int ch = 0; ch < nch/2; ch++) {
-		_mm_storeu_pd(outptr + 2*ch, sum[ch]);
+	double out[2];
+	_mm_storeu_pd(out, _mm_add_pd(_mm_add_pd(sum[0], sum[1]), _mm_add_pd(sum[2], sum[3])));
+	*outptr = out[0] + out[1];
+}
+
+template<int NCH, int BLKSIZE>
+inline void WDL_Resampler::SincSampleZOH2N(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, const WDL_SincFilterSample *filter, int filtsz) {
+	static_assert(NCH % 2 == 0, "");
+	static_assert(BLKSIZE == 1 || BLKSIZE == 2 || BLKSIZE == 4, "");
+	const int oversize=m_lp_oversize;
+	fracpos *= oversize;
+	const int ifpos = lrint(fracpos);
+	const WDL_SincFilterSample *fptr = filter + (oversize-ifpos+1) * filtsz;
+	
+	__m128d sum[NCH/2][BLKSIZE];
+	#pragma unroll
+	for (int ch = 0; ch < NCH/2; ch++) {
+		for (int i = 0; i < BLKSIZE; i++) {
+			sum[ch][i] = _mm_setzero_pd();
+		}
+	}
+	// assumes filtsz % BLKSIZE == 0
+	while (filtsz) {
+		#pragma unroll
+		for (int i = 0; i < BLKSIZE; i++) {
+			const double f = *fptr++;
+			#pragma unroll
+			for (int ch = 0; ch < NCH/2; ch++) {
+				sum[ch][i] = _mm_add_pd(sum[ch][i],
+					_mm_mul_pd(_mm_loadu_pd(inptr), _mm_load1_pd(&f)));
+				inptr += 2;
+			}
+		}
+		filtsz -= BLKSIZE;
+	}
+	#pragma unroll
+	for (int ch = 0; ch < NCH/2; ch++) {
+		_mm_storeu_pd(outptr + 2*ch,
+			  BLKSIZE == 1 ? sum[ch][0]
+			: BLKSIZE == 2 ? _mm_add_pd(sum[ch][0], sum[ch][1])
+			: _mm_add_pd(_mm_add_pd(sum[ch][0], sum[ch][1]), _mm_add_pd(sum[ch][2], sum[ch][3]))
+		);
 	}
 }
 
@@ -190,35 +236,84 @@ static inline V quadinterp(T x, V y1, V y2, V y3) {
 	return 0.5*x*(y1*xm1 + y3*xp1) - y2*xp1*xm1;
 }
 
+inline void WDL_Resampler::SincSampleQuad1(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, const WDL_SincFilterSample *filter, int filtsz) {
+	const int oversize=m_lp_oversize;
+	fracpos *= oversize;
+	const int ifpos = lrint(fracpos);
+	fracpos -= ifpos;
+	const WDL_SincFilterSample *fptr1 = filter + (oversize-ifpos+2) * filtsz;
+	const WDL_SincFilterSample *fptr2 = fptr1 - filtsz;
+	const WDL_SincFilterSample *fptr3 = fptr2 - filtsz;
+	const WDL_ResampleSample *iptr = inptr;
+	__m128d sum1[2];
+	__m128d sum2[2];
+	__m128d sum3[2];
+	#pragma unroll
+	for (int i = 0; i < 2; i++) {
+		sum1[i] = _mm_setzero_pd();
+		sum2[i] = _mm_setzero_pd();
+		sum3[i] = _mm_setzero_pd();
+	}
+	// assumes filtsz % 4 == 0
+	while (filtsz) {
+		#pragma unroll
+		for (int i = 0; i < 2; i++) {
+			const __m128d inp = _mm_loadu_pd(iptr);
+			const double f[6] = {fptr1[0], fptr1[1], fptr2[0], fptr2[1], fptr3[0], fptr3[1]};
+			iptr += 2;
+			fptr1 += 2;
+			fptr2 += 2;
+			fptr3 += 2;
+			sum1[i] = _mm_add_pd(sum1[i], _mm_mul_pd(inp, _mm_loadu_pd(f  )));
+			sum2[i] = _mm_add_pd(sum2[i], _mm_mul_pd(inp, _mm_loadu_pd(f+2)));
+			sum3[i] = _mm_add_pd(sum3[i], _mm_mul_pd(inp, _mm_loadu_pd(f+4)));
+		}
+		filtsz -= 4;
+	}
+	double out[6];
+	_mm_storeu_pd(out  , _mm_add_pd(sum1[0], sum1[1]));
+	_mm_storeu_pd(out+2, _mm_add_pd(sum2[0], sum2[1]));
+	_mm_storeu_pd(out+4, _mm_add_pd(sum3[0], sum3[1]));
+	*outptr = quadinterp(fracpos, out[0]+out[1], out[2]+out[3], out[4]+out[5]);
+}
+
 inline void WDL_Resampler::SincSampleQuad2N(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, int nch, const WDL_SincFilterSample *filter, int filtsz) {
 	const int oversize=m_lp_oversize;
 	fracpos *= oversize;
-	const int ifpos = lround(fracpos);
+	const int ifpos = lrint(fracpos);
 	fracpos -= ifpos;
 	for (int ch = 0; ch < nch; ch += 2) {
 		const WDL_SincFilterSample *fptr1 = filter + (oversize-ifpos+2) * filtsz;
 		const WDL_SincFilterSample *fptr2 = fptr1 - filtsz;
 		const WDL_SincFilterSample *fptr3 = fptr2 - filtsz;
 		const WDL_ResampleSample *iptr = inptr + ch;
-		__m128d sum1 = _mm_setzero_pd();
-		__m128d sum2 = _mm_setzero_pd();
-		__m128d sum3 = _mm_setzero_pd();
+		__m128d sum1[2];
+		__m128d sum2[2];
+		__m128d sum3[2];
+		#pragma unroll
+		for (int i = 0; i < 2; i++) {
+			sum1[i] = _mm_setzero_pd();
+			sum2[i] = _mm_setzero_pd();
+			sum3[i] = _mm_setzero_pd();
+		}
 		int i = filtsz;
-		while (i--) {
-			const __m128d inp = _mm_loadu_pd(iptr);
-			const double f[3] = {*fptr1, *fptr2, *fptr3};
-			sum1 = _mm_add_pd(sum1, _mm_mul_pd(inp, _mm_load1_pd(f  )));
-			sum2 = _mm_add_pd(sum2, _mm_mul_pd(inp, _mm_load1_pd(f+1)));
-			sum3 = _mm_add_pd(sum3, _mm_mul_pd(inp, _mm_load1_pd(f+2)));
-			iptr += nch;
-			fptr1++;
-			fptr2++;
-			fptr3++;
+		// assumes filtsz % 2 == 0
+		while (i) {
+			#pragma unroll
+			for (int j = 0; j < 2; j++) {
+				const __m128d inp = _mm_loadu_pd(iptr);
+				iptr += nch;
+				const double f[3] = {*fptr1++, *fptr2++, *fptr3++};
+				sum1[j] = _mm_add_pd(sum1[j], _mm_mul_pd(inp, _mm_load1_pd(f  )));
+				sum2[j] = _mm_add_pd(sum2[j], _mm_mul_pd(inp, _mm_load1_pd(f+1)));
+				sum3[j] = _mm_add_pd(sum3[j], _mm_mul_pd(inp, _mm_load1_pd(f+2)));
+			}
+			i -= 2;
 		}
 		double out[6];
-		_mm_storeu_pd(out  , sum1);
-		_mm_storeu_pd(out+2, sum2);
-		_mm_storeu_pd(out+4, sum3);
+		_mm_storeu_pd(out  , _mm_add_pd(sum1[0], sum1[1]));
+		_mm_storeu_pd(out+2, _mm_add_pd(sum2[0], sum2[1]));
+		_mm_storeu_pd(out+4, _mm_add_pd(sum3[0], sum3[1]));
 		outptr[ch]   = quadinterp(fracpos, out[0], out[2], out[4]);
 		outptr[ch+1] = quadinterp(fracpos, out[1], out[3], out[5]);
 	}
@@ -267,37 +362,73 @@ int WDL_Resampler::ResampleOut(WDL_ResampleSample *out, int nsamples_in, int nsa
     outlatadj = filtsz/2-1;
 	const bool useZOH = cache != NULL ? cache->i_out != SRATE_ARB : false;
 
-	#define SINCSAMPLE_LOOP(SINCSAMPLE, NCH) \
+	#define SINCSAMPLE_LOOP(SINCSAMPLE, NCH) { \
+	  int mode = _MM_GET_ROUNDING_MODE(); \
+	  _MM_SET_ROUNDING_MODE(_MM_ROUND_NEAREST); \
 	  while (ns--) { \
-        int ipos = (int)srcpos; \
+        int ipos = ltrunc(srcpos); \
+        if (ipos >= filtlen-1) { break; } \
+		SINCSAMPLE(outptr, localin + ipos*NCH, srcpos-ipos, filter, filtsz); \
+        outptr += NCH; \
+        srcpos += drspos; \
+        ret++; \
+      } \
+	  _MM_SET_ROUNDING_MODE(mode); }
+	
+	#define SINCSAMPLE_TMPL_LOOP(SINCSAMPLE, NCH, BLKSIZE) { \
+	  int mode = _MM_GET_ROUNDING_MODE(); \
+	  _MM_SET_ROUNDING_MODE(_MM_ROUND_NEAREST); \
+	  while (ns--) { \
+        int ipos = ltrunc(srcpos); \
+        if (ipos >= filtlen-1) { break; } \
+		SINCSAMPLE<NCH, BLKSIZE>(outptr, localin + ipos*NCH, srcpos-ipos, filter, filtsz); \
+        outptr += NCH; \
+        srcpos += drspos; \
+        ret++; \
+      } \
+	  _MM_SET_ROUNDING_MODE(mode); }
+	
+	#define SINCSAMPLEN_LOOP(SINCSAMPLE, NCH) { \
+	  int mode = _MM_GET_ROUNDING_MODE(); \
+	  _MM_SET_ROUNDING_MODE(_MM_ROUND_NEAREST); \
+	  while (ns--) { \
+        int ipos = ltrunc(srcpos); \
         if (ipos >= filtlen-1) { break; } \
 		SINCSAMPLE(outptr, localin + ipos*NCH, srcpos-ipos, NCH, filter, filtsz); \
         outptr += NCH; \
         srcpos += drspos; \
         ret++; \
-      }
-
+      } \
+	  _MM_SET_ROUNDING_MODE(mode); }
+	  
     if (nch % 2 == 0)
     {
       if (useZOH) {
 	    switch (nch) {  // common channel counts
 		  case 2:
-		    SINCSAMPLE_LOOP(SincSampleZOH2N, 2)
+		    SINCSAMPLE_TMPL_LOOP(SincSampleZOH2N, 2, 4)
 		    break;
 		  case 6:
-		    SINCSAMPLE_LOOP(SincSampleZOH2N, 6)
+		    SINCSAMPLE_TMPL_LOOP(SincSampleZOH2N, 6, 2)
 		    break;
 		  case 8:
-		    SINCSAMPLE_LOOP(SincSampleZOH2N, 8)
+		    SINCSAMPLE_TMPL_LOOP(SincSampleZOH2N, 8, 1)
 		    break;
 		  default:
-		    SINCSAMPLE_LOOP(SincSampleZOH2N, nch)
+			return 0;
+			// not yet implemented
 		}
 	  } else {
-	    SINCSAMPLE_LOOP(SincSampleQuad2N, nch)
+	    SINCSAMPLEN_LOOP(SincSampleQuad2N, nch)
 	  }
     }
-	else {
+	else if (nch == 1) {
+		if (useZOH) {
+			SINCSAMPLE_LOOP(SincSampleZOH1, 1)
+		} else {
+			SINCSAMPLE_LOOP(SincSampleQuad1, 1)
+		}
+	} else {
 		// not yet implemented
 		return 0;
 	}

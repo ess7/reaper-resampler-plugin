@@ -103,8 +103,11 @@ private:
 	class Cache;
 	void BuildLowPass(const double filtpos, const double beta, const int interpsize);
 	const WDL_SincFilterSample *GetFilterCoeff(Cache *cache);
+	inline void SincSampleQuad1(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, const WDL_SincFilterSample *filter, int filtsz);
 	inline void SincSampleQuad2N(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, int nch, const WDL_SincFilterSample *filter, int filtsz);
-	inline void SincSampleZOH2N(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, int nch, const WDL_SincFilterSample *filter, int filtsz);
+	inline void SincSampleZOH1(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, const WDL_SincFilterSample *filter, int filtsz);
+	template<int NCH, int BLKSIZE>
+	inline void SincSampleZOH2N(WDL_ResampleSample *outptr, const WDL_ResampleSample *inptr, double fracpos, const WDL_SincFilterSample *filter, int filtsz);
 	
 	double m_sratein; //WDL_FIXALIGN;
 	double m_srateout;
