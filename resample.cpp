@@ -404,7 +404,20 @@ int WDL_Resampler::ResampleOut(WDL_ResampleSample *out, int nsamples_in, int nsa
 			// not yet implemented
 		}
 	  } else {
-	    SINCSAMPLEN_LOOP(SincSampleQuad2N, nch)
+	      switch (nch) {
+		    case 2:
+		      SINCSAMPLEN_LOOP(SincSampleQuad2N, 2)
+		      break;
+		    case 6:
+		      SINCSAMPLEN_LOOP(SincSampleQuad2N, 6)
+		      break;
+		    case 8:
+		      SINCSAMPLEN_LOOP(SincSampleQuad2N, 8)
+		      break;
+		    default:
+		  	  SINCSAMPLEN_LOOP(SincSampleQuad2N, nch)
+			  break;
+		  }
 	  }
     }
 	else if (nch == 1) {
