@@ -314,6 +314,9 @@ int WDL_Resampler::ResampleOut(WDL_ResampleSample *out, int nsamples_in, int nsa
   if (nch > WDL_RESAMPLE_MAX_NCH || nch < 1) return 0;
   if (m_filtercnt>0) return 0;  // not implemented
   
+  int mode = _MM_GET_ROUNDING_MODE();
+  _MM_SET_ROUNDING_MODE(_MM_ROUND_NEAREST);
+  
   // prevent the caller from corrupting the internal state
   m_samples_in_rsinbuf += nsamples_in < m_last_requested ? nsamples_in : m_last_requested; 
 
@@ -342,6 +345,7 @@ int WDL_Resampler::ResampleOut(WDL_ResampleSample *out, int nsamples_in, int nsa
   int ns=nsamples_out;
 
   int outlatadj=0;
+  int isrcpos;
 
   if (m_sincsize) // sinc interpolating
   {
@@ -352,9 +356,7 @@ int WDL_Resampler::ResampleOut(WDL_ResampleSample *out, int nsamples_in, int nsa
     outlatadj = filtsz/2-1;
 	const bool useZOH = cache != NULL ? cache->i_out != SRATE_ARB : false;
 
-	#define SINCSAMPLE_LOOP(SINCSAMPLE, NCH) { \
-	  int mode = _MM_GET_ROUNDING_MODE(); \
-	  _MM_SET_ROUNDING_MODE(_MM_ROUND_NEAREST); \
+	#define SINCSAMPLE_LOOP(SINCSAMPLE, NCH) \
 	  while (ns--) { \
         int ipos = ltrunc(srcpos); \
         if (ipos >= filtlen-1) { break; } \
@@ -362,12 +364,9 @@ int WDL_Resampler::ResampleOut(WDL_ResampleSample *out, int nsamples_in, int nsa
         outptr += NCH; \
         srcpos += drspos; \
         ret++; \
-      } \
-	  _MM_SET_ROUNDING_MODE(mode); }
+      }
 	
-	#define SINCSAMPLE_TMPL_LOOP(SINCSAMPLE, NCH, BLKSIZE) { \
-	  int mode = _MM_GET_ROUNDING_MODE(); \
-	  _MM_SET_ROUNDING_MODE(_MM_ROUND_NEAREST); \
+	#define SINCSAMPLE_TMPL_LOOP(SINCSAMPLE, NCH, BLKSIZE) \
 	  while (ns--) { \
         int ipos = ltrunc(srcpos); \
         if (ipos >= filtlen-1) { break; } \
@@ -375,12 +374,9 @@ int WDL_Resampler::ResampleOut(WDL_ResampleSample *out, int nsamples_in, int nsa
         outptr += NCH; \
         srcpos += drspos; \
         ret++; \
-      } \
-	  _MM_SET_ROUNDING_MODE(mode); }
+      }
 	
-	#define SINCSAMPLEN_LOOP(SINCSAMPLE, NCH) { \
-	  int mode = _MM_GET_ROUNDING_MODE(); \
-	  _MM_SET_ROUNDING_MODE(_MM_ROUND_NEAREST); \
+	#define SINCSAMPLEN_LOOP(SINCSAMPLE, NCH) \
 	  while (ns--) { \
         int ipos = ltrunc(srcpos); \
         if (ipos >= filtlen-1) { break; } \
@@ -388,9 +384,8 @@ int WDL_Resampler::ResampleOut(WDL_ResampleSample *out, int nsamples_in, int nsa
         outptr += NCH; \
         srcpos += drspos; \
         ret++; \
-      } \
-	  _MM_SET_ROUNDING_MODE(mode); }
-	  
+      }
+	
     if (nch % 2 == 0)
     {
       if (useZOH) {
@@ -405,7 +400,7 @@ int WDL_Resampler::ResampleOut(WDL_ResampleSample *out, int nsamples_in, int nsa
 		    SINCSAMPLE_TMPL_LOOP(SincSampleZOH2N, 8, 1)
 		    break;
 		  default:
-			return 0;
+			 goto exit;
 			// not yet implemented
 		}
 	  } else {
@@ -420,7 +415,7 @@ int WDL_Resampler::ResampleOut(WDL_ResampleSample *out, int nsamples_in, int nsa
 		}
 	} else {
 		// not yet implemented
-		return 0;
+		 goto exit;
 	}
 	if (useZOH) {
 		// snap srcpos to 1/m_lp_oversize grid
@@ -430,7 +425,7 @@ int WDL_Resampler::ResampleOut(WDL_ResampleSample *out, int nsamples_in, int nsa
   else
   {
 	// not implemented
-    return 0;
+    goto exit;
   }
   
   if (ret>0 && rsinbuf_availtemp>m_samples_in_rsinbuf) // we had to pad!!
@@ -444,14 +439,16 @@ int WDL_Resampler::ResampleOut(WDL_ResampleSample *out, int nsamples_in, int nsa
     }
   }
 
-  int isrcpos=(int)srcpos;
+  isrcpos=(int)srcpos;
   if (isrcpos > m_samples_in_rsinbuf) isrcpos=m_samples_in_rsinbuf;
   m_fracpos = srcpos - isrcpos;
   m_samples_in_rsinbuf -= isrcpos;
   if (m_samples_in_rsinbuf <= 0) m_samples_in_rsinbuf=0;
   else
     memmove(localin, localin + isrcpos*nch,m_samples_in_rsinbuf*sizeof(WDL_ResampleSample)*nch);
-
+  
+exit:
+  _MM_SET_ROUNDING_MODE(mode);
   return ret;
 }
 
