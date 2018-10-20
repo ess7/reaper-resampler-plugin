@@ -168,13 +168,11 @@ inline void WDL_Resampler::SincSampleZOH1(WDL_ResampleSample *outptr, const WDL_
 	
 	constexpr int BLKSIZE = 4;
 	__m128d sum[BLKSIZE];
-	#pragma unroll
 	for (int i = 0; i < BLKSIZE; i++) {
 		sum[i] = _mm_setzero_pd();
 	}
 	// assumes filtsz % 8 == 0
 	while (filtsz) {
-		#pragma unroll
 		for (int i = 0; i < BLKSIZE; i++) {
 			const double f[2] = {fptr[0], fptr[1]};
 			fptr += 2;
@@ -198,7 +196,6 @@ inline void WDL_Resampler::SincSampleZOH2N(WDL_ResampleSample *outptr, const WDL
 	const WDL_SincFilterSample *fptr = filter + (oversize-ifpos+1) * filtsz;
 	
 	__m128d sum[NCH/2][BLKSIZE];
-	#pragma unroll
 	for (int ch = 0; ch < NCH/2; ch++) {
 		for (int i = 0; i < BLKSIZE; i++) {
 			sum[ch][i] = _mm_setzero_pd();
@@ -206,10 +203,8 @@ inline void WDL_Resampler::SincSampleZOH2N(WDL_ResampleSample *outptr, const WDL
 	}
 	// assumes filtsz % BLKSIZE == 0
 	while (filtsz) {
-		#pragma unroll
 		for (int i = 0; i < BLKSIZE; i++) {
 			const double f = *fptr++;
-			#pragma unroll
 			for (int ch = 0; ch < NCH/2; ch++) {
 				sum[ch][i] = _mm_add_pd(sum[ch][i],
 					_mm_mul_pd(_mm_loadu_pd(inptr), _mm_load1_pd(&f)));
@@ -218,7 +213,6 @@ inline void WDL_Resampler::SincSampleZOH2N(WDL_ResampleSample *outptr, const WDL
 		}
 		filtsz -= BLKSIZE;
 	}
-	#pragma unroll
 	for (int ch = 0; ch < NCH/2; ch++) {
 		_mm_storeu_pd(outptr + 2*ch,
 			  BLKSIZE == 1 ? sum[ch][0]
@@ -248,7 +242,6 @@ inline void WDL_Resampler::SincSampleQuad1(WDL_ResampleSample *outptr, const WDL
 	__m128d sum1[2];
 	__m128d sum2[2];
 	__m128d sum3[2];
-	#pragma unroll
 	for (int i = 0; i < 2; i++) {
 		sum1[i] = _mm_setzero_pd();
 		sum2[i] = _mm_setzero_pd();
@@ -256,7 +249,6 @@ inline void WDL_Resampler::SincSampleQuad1(WDL_ResampleSample *outptr, const WDL
 	}
 	// assumes filtsz % 4 == 0
 	while (filtsz) {
-		#pragma unroll
 		for (int i = 0; i < 2; i++) {
 			const __m128d inp = _mm_loadu_pd(iptr);
 			const double f[6] = {fptr1[0], fptr1[1], fptr2[0], fptr2[1], fptr3[0], fptr3[1]};
@@ -290,7 +282,6 @@ inline void WDL_Resampler::SincSampleQuad2N(WDL_ResampleSample *outptr, const WD
 		__m128d sum1[2];
 		__m128d sum2[2];
 		__m128d sum3[2];
-		#pragma unroll
 		for (int i = 0; i < 2; i++) {
 			sum1[i] = _mm_setzero_pd();
 			sum2[i] = _mm_setzero_pd();
@@ -299,7 +290,6 @@ inline void WDL_Resampler::SincSampleQuad2N(WDL_ResampleSample *outptr, const WD
 		int i = filtsz;
 		// assumes filtsz % 2 == 0
 		while (i) {
-			#pragma unroll
 			for (int j = 0; j < 2; j++) {
 				const __m128d inp = _mm_loadu_pd(iptr);
 				iptr += nch;
